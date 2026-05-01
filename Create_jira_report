@@ -1,0 +1,11 @@
+  Query Jira for all issues created between 2026-03-01 and 2026-03-31. Use the jira-query tool. And source as OBS
+  
+  For each issue, capture: issue key, summary, priority, status, assignee, created date, resolved date (if any). Project scope is OBS
+  
+  Produce a report with:
+   1. Summary table — all bugs sorted by priority (Critical → High → Medium → Low)
+   2. Breakdown by status — how many are Open / In Progress / Done / Won't Fix
+   3. Breakdown by priority — counts per level
+   4. Unresolved bugs — list only bugs still open as of today                                                               
+  
+   Write the full report to $HOME/outputs/20260414-bugs-march-2026.md.
