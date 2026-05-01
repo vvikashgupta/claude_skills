@@ -1,0 +1,72 @@
+The core problem
+                                                                                                                                                          
+  You can't drain 15 nodes simply by cordoning them — the pods on those nodes need somewhere to land. Right now, schedulable capacity is artificially
+  constrained by inflated requests. Fix requests first, then drain.                                                                                       
+                                                        
+  ---                                                                                                                                                     
+  Phase 1 — Free schedulable capacity (do this first)   
+                                                                                                                                                          
+  Right-size the most egregiously over-provisioned pods. These changes are low-risk because the pods are barely using anything.
+                                                                                                                                                          
+  Priority targets:                                                                                                                                       
+                                                                                                                                                          
+  ┌────────────────────┬───────────────┬─────────────────┬───────────────────┬────────────┐                                                               
+  │     Namespace      │      Pod      │ Current request │ Suggested request │ Mem freed  │
+  ├────────────────────┼───────────────┼─────────────────┼───────────────────┼────────────┤                                                               
+  │ vm-aisecops        │ vmstorage x4  │ 2000m / 16Gi    │ 100m / 1Gi        │ ~60Gi      │
+  ├────────────────────┼───────────────┼─────────────────┼───────────────────┼────────────┤                                                               
+  │ vm-ocr             │ vmstorage x2  │ 2000m / 16Gi    │ 100m / 1Gi        │ ~30Gi      │                                                               
+  ├────────────────────┼───────────────┼─────────────────┼───────────────────┼────────────┤                                                               
+  │ vm-k8s             │ vmstorage x16 │ 8000m / —       │ 500m / —          │ ~124 cores │                                                               
+  ├────────────────────┼───────────────┼─────────────────┼───────────────────┼────────────┤                                                               
+  │ vm-dp              │ vmselect x14  │ 1000m / 2Gi     │ 50m / 768Mi       │ ~18Gi      │
+  ├────────────────────┼───────────────┼─────────────────┼───────────────────┼────────────┤                                                               
+  │ vm-cloudconfigsync │ vmselect x3   │ 1000m / 2Gi     │ 50m / 768Mi       │ ~4Gi       │
+  └────────────────────┴───────────────┴─────────────────┴───────────────────┴────────────┘                                                               
+                                                       
+  This alone frees ~110Gi of schedulable memory and ~130 CPU cores — enough headroom for pods from 4-6 more nodes to bin-pack onto existing nodes.        
+                                                       
+  ---                                                                                                                                                     
+  Phase 2 — Cordon and drain (in batches of 5)         
+                                                                                                                                                          
+  Start with the 11 confirmed low-utilization nodes. Cordon first (stops new scheduling), verify pods reschedule cleanly, then drain.
+                                                                                                                                                          
+  Batch 1 — lowest utilization, drain first:                                                                                                              
+  ip-100-64-31-164   (cpu=2.2%,  mem=19.3%)                                                                                                               
+  ip-100-64-31-212   (cpu=1.9%,  mem=19.4%)                                                                                                               
+  ip-100-64-31-207   (cpu=2.0%,  mem=20.0%)                                                                                                               
+  ip-100-64-31-162   (cpu=2.2%,  mem=20.0%)                                                                                                               
+  ip-100-64-31-194   (cpu=7.1%,  mem=19.4%)                                                                                                               
+                                                       
+  Batch 2 — after batch 1 pods have settled:
+  ip-100-64-31-135   (cpu=19.2%, mem=9.0%)                                                                                                                
+  ip-100-64-31-239   (cpu=13.2%, mem=11.6%)
+  ip-100-64-31-183   (cpu=13.4%, mem=13.1%)                                                                                                               
+  ip-100-64-31-152   (cpu=13.0%, mem=16.4%)                                                                                                               
+  ip-100-64-31-196   (cpu=12.5%, mem=16.6%)                                                                                                               
+                                                                                                                                                          
+  Batch 3 — after Phase 1 request right-sizing has taken effect:                                                                                          
+  ip-100-64-31-181   (cpu=18.4%, mem=18.7%)                                                                                                               
+  ip-100-64-31-155   (cpu=21%,   mem=9.2%)   ← slightly over CPU threshold but low mem                                                                    
+  ip-100-64-31-206   (cpu=38%,   mem=11.1%)  ← high CPU but very low mem, monitor                                                                         
+  ip-100-64-31-242   (cpu=19%,   mem=17.7%)                                                                                                               
+  ip-100-64-31-158   (cpu=17%,   mem=17.6%)                                                                                                               
+                                                                                                                                                          
+  ---                                                                                                                                                     
+  Phase 3 — Drain sequence per node                                                                                                                       
+                                                                                                                                                          
+  For each node in the batch:                                                                                                                             
+  # 1. Cordon — stop new pods scheduling here                                                                                                             
+  kubectl cordon <node>                                                                                                                                   
+                                                                                                                                                          
+  # 2. Check what's running on it                                                                                                                         
+  kubectl get pods --all-namespaces --field-selector spec.nodeName=<node>                                                                                 
+                                                                                                                                                          
+  # 3. Drain — evicts all pods (respects PodDisruptionBudgets)                                                                                            
+  kubectl drain <node> --ignore-daemonsets --delete-emptydir-data --grace-period=60                                                                       
+                                                                                                                                                          
+  # 4. Verify pods rescheduled healthy before removing from node group                                                                                    
+  kubectl get pods --all-namespaces | grep -E "Pending|CrashLoop"                                                                                         
+                                                                                                                                                          
+  # 5. Remove from AWS node group (via eksctl, AWS console, or autoscaler)                                                                                
+                                                                                  

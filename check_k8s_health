@@ -1,0 +1,36 @@
+Create a new skill: obs-claude/skills/k8s-health-check/SKILL.md                                                                   
+                                                                                                                                    
+  Purpose: Read-only health check for any Kubernetes cluster — nodes,                                                               
+  workloads, and events. Works with any kubeconfig, no repo required.                                                               
+                                                                                                                                    
+  Arguments:                                                                                                                        
+    --kubeconfig <path>   required                                                                                                  
+    --namespaces <ns,...> optional, default: all non-system                                                                         
+    --verbose             optional, show pod-level detail                                                                           
+    --output <path>       optional, write report to file                                                                            
+                                                                                                                                    
+  What it checks (in order):                                                                                                        
+    1. Nodes — Ready/NotReady, CPU/memory pressure, cordoned                                                                        
+    2. Deployments/StatefulSets — not ready, unavailable replicas                                                                   
+    3. Pods — CrashLoopBackOff, OOMKilled, Pending, ImagePullBackOff                                                                
+    4. PVCs — Pending/Lost                                                                                                          
+    5. Warning events — last 1h, deduplicated                                                                                       
+    6. Resource pressure — top nodes if metrics-server available
+    7. Check vmagent namespace.
+    8. Also check if there are any pending messages on the queue.
+    9. Check the pods using excessive pods and report them
+    10. Provide a summary in text format on command prompt and generate a CSV file with full details and store it in output file.                                                                    
+                                                                                                                                    
+  Output:                                                                                                                           
+    - Traffic-light summary table per namespace (GREEN/AMBER/RED)                                                                   
+    - Drill-down detail for any RED/AMBER namespace                                                                                 
+    - Clean namespaces listed briefly at the bottom                                                                                 
+    - Optional file report to $HOME/outputs/                                                                                        
+                                                                                                                                    
+  Constraints:                                                                                                                      
+    - Read-only always, no remediation                                                                                              
+    - Production and non-prod both allowed (read-only)                                                                              
+    - Use parallel agents for scanning when > 10 namespaces                                                                         
+    - No --repo dependency, no Helm required                                                                                        
+    - Follow skill header/footer format from                                                                                        
+      $HOME/.claude/reference/skill-post-run-report.md                           

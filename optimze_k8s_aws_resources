@@ -1,0 +1,33 @@
+Create a new skill: obs-claude/skills/k8s-resources_usage/SKILL.md                                                                   
+                                                                                                                                    
+  Purpose: Read-only health check for any Kubernetes cluster — nodes,                                                               
+  
+  Perform a Kubernetes resource optimization analysis on cluster eks-prism-prod-usw2.
+  KUBECONFIG: /Users/vikashg/.config/eks-prism-prod-usw2.yaml                                                                    
+                                                                                                                                 
+  For each namespace, identify:                                                                                                  
+                                                                                                                                 
+  1. OVER-PROVISIONED pods: actual CPU/mem < 30% of request (wasting schedulable capacity)                                       
+     - kubectl top pods vs kubectl get pod -o json (.resources.requests)
+                                                                                                                                 
+  2. UNDER-PROVISIONED pods: actual CPU > 80% of request OR actual mem > 80% of request                                          
+     (throttling or OOMKill risk)                                                                                                
+                                                                                                                                 
+  3. NO-LIMIT pods: pods with no memory or CPU limit set, using >1Gi mem or >500m CPU                                            
+     (unbounded consumers — eviction risk for neighbors)                                                                         
+                                                                                                                                 
+  4. NODE FRAGMENTATION: nodes where total pod requests >> actual usage by >50%                                                  
+     - kubectl describe node | grep -A5 "Allocated resources"                                                                    
+                                                                                                                                 
+  5. IDLE NAMESPACES: namespaces with all pods using <10% of their requests                                                      
+                                                                                                                                 
+  Produce a ranked list: most wasteful → most at-risk, with specific pod/namespace/numbers.                                      
+  Focus on actionable findings: what to reduce, what to increase, what to cap.
+
+  Constraints:                                                                                                                      
+    - Read-only always, no remediation                                                                                              
+    - Production and non-prod both allowed (read-only)                                                                              
+    - Use parallel agents for scanning when > 10 namespaces                                                                         
+    - No --repo dependency, no Helm required                                                                                        
+    - Follow skill header/footer format from                                                                                        
+      $HOME/.claude/reference/skill-post-run-report.md    

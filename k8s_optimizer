@@ -1,0 +1,213 @@
+  # k8s-optimize                                                                                                                                                
+                                                                                                                                                                
+  Orchestrates a full cluster optimization pass: runs health and resource scans in parallel,
+  merges findings, and produces a single prioritized action plan with concrete next steps.                                                                      
+                                                                                                                                                                
+  **Read-only on all clusters — production and non-prod.**                                                                                                      
+                                                                                                                                                                
+  ---                                                   
+                                                                                                                                                                
+  ## Arguments                                          
+                                                                                                                                                                
+  | Flag | Required | Description |
+  |------|----------|-------------|                                                                                                                             
+  | `--kubeconfig <path>` | Yes | Path to kubeconfig file |                                                                                                     
+  | `--namespaces <ns1,ns2,...>` | No | Comma-separated namespace filter. Passed through to both sub-skills. Default: all non-system namespaces |               
+  | `--output <path>` | No | Override output file path. Default: `$HOME/outputs/<timestamp>-k8s-optimize-<context>.md` |                                        
+                                                                                                                                                                
+  ---                                                                                                                                                           
+                                                                                                                                                                
+  ## Execution Steps                                    
+                                                                                                                                                                
+  ### Step 0 — Preflight                                
+                                                                                                                                                                
+  Record start time:                                    
+  ```bash                                                                                                                                                       
+  SKILL_START_TIME=$(date +%s)                          
+  SKILL_START_DISPLAY=$(date '+%Y-%m-%d %I:%M:%S %p %Z')                                                                                                        
+                                                                                                                                                                
+  Validate arguments: --kubeconfig is required. If missing, stop:                                                                                               
+  Error: --kubeconfig is required.                                                                                                                              
+  Usage: /k8s-optimize --kubeconfig <path> [--namespaces <ns,...>] [--output <path>]                                                                            
+                                                                                                                                                                
+  Verify kubeconfig file exists and cluster is reachable:                                                                                                       
+  KUBECONFIG=<path> kubectl config current-context                                                                                                              
+  KUBECONFIG=<path> kubectl cluster-info 2>&1 | head -2                                                                                                         
+                                                                                                                                                                
+  Print preflight summary:                                                                                                                                      
+  Cluster:    <current-context>                                                                                                                                 
+  KUBECONFIG: <path>                                                                                                                                            
+  Namespaces: <filter or "all non-system">                                                                                                                      
+  Phase:      Running health + resource scans in parallel...                                                                                                    
+                                                                                                                                                                
+  ---                                                                                                                                                           
+  Step 1 — Parallel Scans                                                                                                                                       
+                                                                                                                                                                
+  Launch both sub-skills as parallel background agents. Do NOT wait for one before starting the other.                                                          
+                                                                                                                                                                
+  Agent 1 — Health scan:                                                                                                                                        
+  Run the full k8s-health-check skill against this cluster.                                                                                                     
+  KUBECONFIG: <path>                                                                                                                                            
+  Namespaces: <filter or "all non-system">                                                                                                                      
+                                                                                                                                                                
+  Execute all steps (nodes, deployments, pods, PVCs, events, resource pressure,                                                                                 
+  vmagent, queue, excessive consumers) exactly as defined in the skill.                                                                                         
+                                                                                                                                                                
+  Return findings as structured text:                                                                                                                           
+  HEALTH_RESULT:                                                                                                                                                
+    nodes: <total> total, <N> issues                                                                                                                            
+      RED:   <list of node names and issues>                                                                                                                    
+      AMBER: <list of node names and issues>                                                                                                                    
+    namespaces:                                                                                                                                                 
+      RED:   <ns> — <top issue>                                                                                                                                 
+      AMBER: <ns> — <top issue>                                                                                                                                 
+    excessive_consumers:                                                                                                                                        
+      <pod> <ns> cpu=<pct>% mem=<pct>%                                                                                                                          
+    csv_path: <path>                                                                                                                                            
+                                                                                                                                                                
+  Agent 2 — Resource usage scan:                                                                                                                                
+  Run the full k8s-resources_usage skill against this cluster.                                                                                                  
+  KUBECONFIG: <path>                                                                                                                                            
+  Namespaces: <filter or "all non-system">                                                                                                                      
+                                                                                                                                                                
+  Execute all steps (over-provisioned, under-provisioned, no-limit, node fragmentation,                                                                         
+  idle namespaces) exactly as defined in the skill.                                                                                                             
+                                                                                                                                                                
+  Return findings as structured text:                                                                                                                           
+  RESOURCE_RESULT:                                                                                                                                              
+    tier1_at_risk:                                                                                                                                              
+      <pod> <ns> — <finding>                                                                                                                                    
+    tier2_wasteful:                                                                                                                                             
+      <pod> <ns> — <finding>                                                                                                                                    
+    tier3_review:                                                                                                                                               
+      <pod> <ns> — <finding>                                                                                                                                    
+    fragmented_nodes:                                                                                                                                           
+      <node> cpu_gap=<pct>% mem_gap=<pct>%                                                                                                                      
+    idle_namespaces:                                                                                                                                            
+      <ns list>                                                                                                                                                 
+    csv_path: <path>                                                                                                                                            
+                                                                                                                                                                
+  Wait for both agents to complete before proceeding to Step 2.                                                                                                 
+                                                                                                                                                                
+  ---                                                                                                                                                           
+  Step 2 — Merge and Cross-Reference                                                                                                                            
+                                                                                                                                                                
+  Merge results from both agents. Cross-reference to surface compounded issues:
+                                                                                                                                                                
+  - A pod flagged RED (CrashLoopBackOff) in health AND UNDER_MEM in resources → likely OOMKill root cause                                                       
+  - A node flagged AMBER (MemoryPressure) in health AND heavily fragmented in resources → consolidation candidate                                               
+  - An idle namespace in resources with no health issues → safe scale-down candidate                                                                            
+  - A pod with no memory limit (resources) AND OOMKilled events (health) → highest priority fix                                                                 
+                                                                                                                                                                
+  Build a unified finding list with a combined severity:                                                                                                        
+                                                                                                                                                                
+  ┌───────────────┬────────────────────────────────────────────────────────────┐                                                                                
+  │   Priority    │                          Criteria                          │
+  ├───────────────┼────────────────────────────────────────────────────────────┤                                                                                
+  │ P0 — Critical │ RED health finding + Tier 1 resource risk on same resource │
+  ├───────────────┼────────────────────────────────────────────────────────────┤                                                                                
+  │ P1 — High     │ RED health OR Tier 1 resource risk (standalone)            │                                                                                
+  ├───────────────┼────────────────────────────────────────────────────────────┤                                                                                
+  │ P2 — Medium   │ AMBER health OR Tier 2 wasteful                            │                                                                                
+  ├───────────────┼────────────────────────────────────────────────────────────┤                                                                                
+  │ P3 — Low      │ Tier 3 review, idle namespaces, fragmented nodes only      │
+  └───────────────┴────────────────────────────────────────────────────────────┘                                                                                
+                                                        
+  ---                                                                                                                                                           
+  Step 3 — Action Plan Generation                       
+                                                                                                                                                                
+  Produce a prioritized action plan. Each item must be concrete and actionable — no vague recommendations.
+                                                                                                                                                                
+  Format per item:                                                                                                                                              
+  [P<n>] <Title>                                                                                                                                                
+    What:   <specific resource and namespace>                                                                                                                   
+    Why:    <evidence from health or resource scan>                                                                                                             
+    Action: <exact kubectl/helm/config change needed>                                                                                                           
+    Risk:   <low|medium|high> — <one-line rationale>                                                                                                            
+                                                                                                                                                                
+  Action categories to cover (only include if findings exist):                                                                                                  
+                                                                                                                                                                
+  1. Stability fixes — address RED health findings first (CrashLoopBackOff, OOMKill, broken remote-write)                                                       
+  2. Right-sizing — reduce over-provisioned requests, raise under-provisioned limits                                                                            
+  3. Limit enforcement — add missing memory/CPU limits on high-usage pods                                                                                       
+  4. Node consolidation — cordon + drain candidates where both CPU and memory < 20%                                                                             
+  5. Namespace cleanup — scale down or remove idle namespaces                                                                                                   
+  6. Monitoring gaps — pods missing prometheus.io/scrape or resource requests                                                                                   
+                                                                                                                                                                
+  ---                                                                                                                                                           
+  Step 4 — Output                                                                                                                                               
+                                                                                                                                                                
+  Screen Summary
+                                                                                                                                                                
+  ================================================================================
+  K8S CLUSTER OPTIMIZATION REPORT — <context>                                                                                                                   
+  Scanned: <timestamp>  |  Namespaces: <count>                                                                                                                  
+  ================================================================================                                                                              
+                                                                                                                                                                
+  HEALTH SCAN SUMMARY                                                                                                                                           
+    Nodes:      <total> total | RED: <N> | AMBER: <N> | GREEN: <N>
+    Namespaces: <total> total | RED: <N> | AMBER: <N> | GREEN: <N>                                                                                              
+    vmagent:    <status>                                                                                                                                        
+                                                                                                                                                                
+  RESOURCE SCAN SUMMARY                                                                                                                                         
+    Pods analysed:      <N>                                                                                                                                     
+    At-risk (Tier 1):   <N> pods                                                                                                                                
+    Wasteful (Tier 2):  <N> pods                                                                                                                                
+    No-limit:           <N> pods                                                                                                                                
+    Fragmented nodes:   <N>/<total>                                                                                                                             
+    Idle namespaces:    <N>                                                                                                                                     
+                                                                                                                                                                
+  COMPOUNDED ISSUES (health + resource overlap)                                                                                                                 
+    <list or "(none)">                                                                                                                                          
+                                                                                                                                                                
+  PRIORITIZED ACTION PLAN                                                                                                                                       
+                                                                                                                                                                
+  [P0] ...                                                                                                                                                      
+  [P1] ...                                              
+  [P2] ...                                                                                                                                                      
+  [P3] ...                                                                                                                                                      
+                                                                                                                                                                
+  Sub-skill reports:                                                                                                                                            
+    Health CSV:   <path>                                                                                                                                        
+    Resource CSV: <path>                                                                                                                                        
+    This report:  <output path>                                                                                                                                 
+  ================================================================================                                                                              
+                                                                                                                                                                
+  Report File                                                                                                                                                   
+                                                                                                                                                                
+  Write full report to $HOME/outputs/<YYYYMMDD>-<HHMMSSam|pm>-k8s-optimize-<context>.md                                                                         
+  (or --output path if provided). Include the full action plan plus all raw findings from both sub-skills.
+                                                                                                                                                                
+  Use the Write tool — not shell redirection.                                                                                                                   
+                                                                                                                                                                
+  ---                                                                                                                                                           
+  Error Handling                                        
+                                                                                                                                                                
+  ┌────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────┐
+  │                       Condition                        │                                           Action                                           │       
+  ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤       
+  │ --kubeconfig missing or file not found                 │ Stop with error and usage hint                                                             │       
+  ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤       
+  │ Cluster unreachable                                    │ Stop with error                                                                            │       
+  ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤       
+  │ Health scan agent fails                                │ Report partial results, continue with resource scan findings                               │       
+  ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤       
+  │ Resource scan agent fails (metrics-server unavailable) │ Report partial results, continue with health findings only; note resource scan was skipped │
+  ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤       
+  │ No issues found in either scan                         │ Report clean cluster — output a brief confirmation                                         │
+  └────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────┘       
+                                                        
+  ---                                                                                                                                                           
+  Skill Footer                                          
+                                                                                                                                                                
+  Print the standard skill footer with timing and cost (see $HOME/.claude/reference/skill-post-run-report.md).
+                                                                                                                                                                
+  Key design decisions in this prompt:                  
+                                                                                                                                                                
+  - **Parallel agents** for both sub-skills — they share no dependencies so they run concurrently, cutting wall time roughly in half.                           
+  - **Cross-referencing** is the main value-add over running the two skills separately — compounded findings (e.g. OOMKill + no memory limit on the same pod)   
+  get escalated to P0.                                                                                                                                          
+  - **Concrete action items** per finding, not just observations — each item specifies the exact resource, the evidence, and the change needed.
+  - **Graceful degradation** — if metrics-server is unavailable and the resource scan fails, the health findings still produce a useful report.                 
+                                                                                                                                                                
+                                                                                     
